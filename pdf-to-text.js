@@ -8,7 +8,7 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type'
 }
 
-const PDF_API = 'https://pdf-to-text-three.vercel.app/pdf'
+const BASE_URL = 'https://pdftotext.com'
 
 async function handleRequest(request) {
   if (request.method === 'OPTIONS') return new Response(null, { headers: CORS })
@@ -30,21 +30,35 @@ async function handleRequest(request) {
 }
 
 async function extractTextFromPDF(pdfFile) {
-  const formData = new FormData()
-  formData.append('pdf', pdfFile)
+  const sid = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+    .map(b => b.toString(16).padStart(2, '0')).join('')
 
-  const response = await fetch(PDF_API, {
-    method: 'POST',
-    body: formData,
-    signal: AbortSignal.timeout(60000)
-  })
+  const filename = pdfFile.name || 'document.pdf'
+  const name = filename.replace(/\.pdf$/i, '')
 
-  if (!response.ok) throw new Error('Failed to extract text from PDF')
+  // 1. Subir
+  const uploadForm = new FormData()
+  uploadForm.append('file', pdfFile)
+  const uploadRes = await fetch(`${BASE_URL}/api/upload?sid=${sid}`, { method: 'POST', body: uploadForm })
+  if (!uploadRes.ok) throw new Error('Failed to upload PDF')
+  const { fid } = await uploadRes.json()
 
-  const data = await response.json()
-  if (!data.text) throw new Error('No text extracted from PDF')
+  // 2. Convertir
+  await fetch(`${BASE_URL}/api/convert/${sid}/${fid}`, { method: 'POST' })
 
-  return data.text
+  // 3. Esperar
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 1000))
+    const status = await fetch(`${BASE_URL}/api/status/${sid}/${fid}`).then(r => r.json())
+    if (status.status === 'success') break
+    if (status.status === 'error') throw new Error(status.error || 'Conversion error')
+    if (i === 59) throw new Error('Timeout waiting for conversion')
+  }
+
+  // 4. Descargar
+  const textRes = await fetch(`${BASE_URL}/api/download/${sid}/${fid}/${name}.txt`)
+  if (!textRes.ok) throw new Error('Failed to download result')
+  return textRes.text()
 }
 
 function jsonResponse(data, status = 200) {
