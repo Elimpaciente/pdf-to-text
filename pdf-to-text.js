@@ -55,10 +55,10 @@ async function uploadToTmpFiles(file, filename) {
       break
     }
   }
-  return `https://tmpfiles.org/dl/${fileId}/${filename}`
+  return `http://tmpfiles.org/${fileId}/${filename}`
 }
 async function extractTextFromPDF(pdfUrl) {
-  const response = await fetch('https://api.kome.ai/api/tools/pdf-to-text', {
+  const response = await fetch('https://kome.ai/api/tools/pdf-to-text', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
