@@ -1,69 +1,83 @@
 addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request))
 })
-
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type'
 }
-
-const BASE_URL = 'https://pdftotext.com'
-
 async function handleRequest(request) {
-  if (request.method === 'OPTIONS') return new Response(null, { headers: CORS })
-  if (request.method !== 'POST') return jsonResponse({ success: false, message: 'Only POST requests are allowed' }, 405)
-
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { headers: CORS })
+  }
+  if (request.method !== 'POST') {
+    return jsonResponse({ success: false, message: 'Only POST requests are allowed' }, 405)
+  }
   const url = new URL(request.url)
-  if (!url.pathname.startsWith('/pdf')) return jsonResponse({ success: false, message: 'Endpoint not found. Use /pdf' }, 404)
-
+  if (!url.pathname.startsWith('/pdf')) {
+    return jsonResponse({ success: false, message: 'Endpoint not found. Use /pdf' }, 404)
+  }
   try {
     const formData = await request.formData()
     const pdfFile = formData.get('pdf')
-    if (!pdfFile) return jsonResponse({ success: false, message: 'PDF file required' }, 400)
-
-    const text = await extractTextFromPDF(pdfFile)
-    return jsonResponse({ success: true, text })
+    if (!pdfFile) {
+      return jsonResponse({ success: false, message: 'PDF file required' }, 400)
+    }
+    const timestamp = Date.now()
+    const filename = `pdf_${timestamp}.pdf`
+    const uploadedUrl = await uploadToTmpFiles(pdfFile, filename)
+    const text = await extractTextFromPDF(uploadedUrl)
+    return jsonResponse({ success: true, text }, 200)
   } catch (error) {
     return jsonResponse({ success: false, message: error.message || 'Error processing PDF' }, 400)
   }
 }
-
-async function extractTextFromPDF(pdfFile) {
-  const sid = Array.from(crypto.getRandomValues(new Uint8Array(8)))
-    .map(b => b.toString(16).padStart(2, '0')).join('')
-
-  const filename = pdfFile.name || 'document.pdf'
-  const name = filename.replace(/\.pdf$/i, '')
-
-  // 1. Subir
-  const uploadForm = new FormData()
-  uploadForm.append('file', pdfFile)
-  const uploadRes = await fetch(`${BASE_URL}/api/upload?sid=${sid}`, { method: 'POST', body: uploadForm })
-  if (!uploadRes.ok) throw new Error('Failed to upload PDF')
-  const { fid } = await uploadRes.json()
-
-  // 2. Convertir
-  await fetch(`${BASE_URL}/api/convert/${sid}/${fid}`, { method: 'POST' })
-
-  // 3. Esperar
-  for (let i = 0; i < 60; i++) {
-    await new Promise(r => setTimeout(r, 1000))
-    const status = await fetch(`${BASE_URL}/api/status/${sid}/${fid}`).then(r => r.json())
-    if (status.status === 'success') break
-    if (status.status === 'error') throw new Error(status.error || 'Conversion error')
-    if (i === 59) throw new Error('Timeout waiting for conversion')
+async function uploadToTmpFiles(file, filename) {
+  const formData = new FormData()
+  formData.append('file', file, filename)
+  const response = await fetch('https://tmpfiles.org/api/v1/upload', {
+    method: 'POST',
+    body: formData
+  })
+  if (!response.ok) {
+    throw new Error('Failed to upload PDF')
   }
-
-  // 4. Descargar
-  const textRes = await fetch(`${BASE_URL}/api/download/${sid}/${fid}/${name}.txt`)
-  if (!textRes.ok) throw new Error('Failed to download result')
-  return textRes.text()
+  const data = await response.json()
+  if (!data.data?.url) {
+    throw new Error('No upload URL received')
+  }
+  const normalUrl = data.data.url
+  const parts = normalUrl.split('/')
+  let fileId = ''
+  for (const part of parts) {
+    if (/^\d+$/.test(part)) {
+      fileId = part
+      break
+    }
+  }
+  return `https://tmpfiles.org/dl/${fileId}/${filename}`
 }
-
-function jsonResponse(data, status = 200) {
+async function extractTextFromPDF(pdfUrl) {
+  const response = await fetch('https://api.kome.ai/api/tools/pdf-to-text', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ url: pdfUrl }),
+    signal: AbortSignal.timeout(60000)
+  })
+  if (!response.ok) {
+    throw new Error('Failed to extract text from PDF')
+  }
+  const data = await response.json()
+  if (!data.text) {
+    throw new Error('No text extracted from PDF')
+  }
+  return data.text
+}
+function jsonResponse(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data, null, 2), {
     status,
-    headers: { 'Content-Type': 'application/json', ...CORS }
+    headers: { 'Content-Type': 'application/json', ...CORS, ...extraHeaders }
   })
 }
